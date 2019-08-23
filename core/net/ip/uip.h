@@ -1792,6 +1792,15 @@ typedef struct uip_routing_hdr {
   uint8_t seg_left;
 } uip_routing_hdr;
 
+/* MCASTER option */
+typedef struct uip_mcaster_hdr {
+  uint8_t next;
+  uint8_t len;
+  uint16_t align1;
+  uint32_t align2;
+  uip_ip6addr_t destipaddr;
+} uip_mcaster_hdr;
+
 /* fragmentation header */
 typedef struct uip_frag_hdr {
   uint8_t next;
@@ -1888,6 +1897,7 @@ struct uip_udp_hdr {
 #define UIP_PROTO_ROUTING     43
 #define UIP_PROTO_FRAG        44
 #define UIP_PROTO_NONE        59
+#define UIP_PROTO_MCASTER     70 //TODO: assign correct ID
 /** @} */
 
 /** @{ */

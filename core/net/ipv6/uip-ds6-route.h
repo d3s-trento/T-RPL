@@ -85,11 +85,18 @@ void uip_ds6_notification_rm(struct uip_ds6_notification *n);
 #ifndef UIP_DS6_ROUTE_STATE_TYPE
 #define UIP_DS6_ROUTE_STATE_TYPE rpl_route_entry_t
 /* Needed for the extended route entry state when using ContikiRPL */
+#define ROUTE_ENTRY_DAO_NOT_SENT 0
+#define ROUTE_ENTRY_DAO_SENT 1
+#define ROUTE_ENTRY_DAO_ACKED 2
+#define ROUTE_ENTRY_DAO_NACKED 3
 typedef struct rpl_route_entry {
   uint32_t lifetime;
   void *dag;
   uint8_t learned_from;
   uint8_t nopath_received;
+  uip_ipaddr_t parent_ipaddr;   //oana: add here parent
+  uint8_t parent_state; /* ROUTE_ENTRY_DAO_ */
+  uint8_t dao_sequence;
 } rpl_route_entry_t;
 #endif /* UIP_DS6_ROUTE_STATE_TYPE */
 

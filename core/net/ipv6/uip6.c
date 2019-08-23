@@ -77,6 +77,7 @@
 #include "net/ipv6/uip-nd6.h"
 #include "net/ipv6/uip-ds6.h"
 #include "net/ipv6/multicast/uip-mcast6.h"
+#include "packetbuf.h"
 
 #include <string.h>
 
@@ -153,6 +154,7 @@ uint8_t uip_ext_opt_offset = 0;
 #define UIP_ROUTING_BUF                ((struct uip_routing_hdr *)&uip_buf[uip_l2_l3_hdr_len])
 #define UIP_FRAG_BUF                      ((struct uip_frag_hdr *)&uip_buf[uip_l2_l3_hdr_len])
 #define UIP_HBHO_BUF                      ((struct uip_hbho_hdr *)&uip_buf[uip_l2_l3_hdr_len])
+#define UIP_MCASTER_BUF                   ((struct uip_mcaster_hdr *)&uip_buf[uip_l2_l3_hdr_len])
 #define UIP_DESTO_BUF                    ((struct uip_desto_hdr *)&uip_buf[uip_l2_l3_hdr_len])
 #define UIP_EXT_HDR_OPT_BUF            ((struct uip_ext_hdr_opt *)&uip_buf[uip_l2_l3_hdr_len + uip_ext_opt_offset])
 #define UIP_EXT_HDR_OPT_PADN_BUF  ((struct uip_ext_hdr_opt_padn *)&uip_buf[uip_l2_l3_hdr_len + uip_ext_opt_offset])
@@ -264,6 +266,27 @@ struct uip_udp_conn uip_udp_conns[UIP_UDP_CONNS];
 struct uip_icmp6_conn uip_icmp6_conns;
 #endif /*UIP_CONF_ICMP6*/
 /** @} */
+
+#define BCAST_SEND_ACK_EVENT 61
+
+PROCESS(bcast_ack_process, "Bcast ack process");
+
+uip_ipaddr_t bcast_ack_dst;
+
+PROCESS_THREAD(bcast_ack_process, ev, data) {
+  	static struct etimer queue_timer;
+  	PROCESS_BEGIN();
+  	while (1) {
+		//printf("Ack: sleep\n");
+		PROCESS_WAIT_EVENT();
+		//printf("Ack: wakeup, %d, %d\n", ev, data);
+		if (ev == BCAST_SEND_ACK_EVENT) {
+			printf("Ack: event, %d\n", data);
+        	broadcast_ack_output(&bcast_ack_dst, 0);
+		}
+	}
+	PROCESS_END();
+}
 
 /*---------------------------------------------------------------------------*/
 /* Functions                                                                 */
@@ -413,6 +436,8 @@ uip_init(void)
   uip_ds6_init();
   uip_icmp6_init();
   uip_nd6_init();
+  
+  process_start(&bcast_ack_process, NULL);
 
 #if UIP_TCP
   for(c = 0; c < UIP_LISTENPORTS; ++c) {
@@ -877,6 +902,16 @@ ext_hdr_options_process(void)
 #endif /* UIP_CONF_IPV6_RPL */
         uip_ext_opt_offset += (UIP_EXT_HDR_OPT_BUF->len) + 2;
         return 0;
+      //case UIP_EXT_HDR_OPT_MCASTER:
+        //PRINTF("Processing MCASTER option\n");
+        // get real destination from option
+        // check if it is a node for which we took responsability
+        // change destination
+        //UIP_IP_BUF->destipaddr = UIP_EXT_HDR_OPT_MCASTER_BUF->destipaddr;
+        // should we remove the header?
+        // resubmit packet for processing
+        //uip_ext_opt_offset += (UIP_EXT_HDR_OPT_BUF->len) + 2;
+        //break;
       default:
         /*
          * check the two highest order bits of the option
@@ -1171,6 +1206,7 @@ uip_process(uint8_t flag)
    */
 #if UIP_CONF_IPV6_MULTICAST
   if(uip_is_addr_mcast_routable(&UIP_IP_BUF->destipaddr)) {
+    PRINTF("uip6:multicast packet processed\n");
     if(UIP_MCAST6.in() == UIP_MCAST6_ACCEPT) {
       /* Deliver up the stack */
       goto process;
@@ -1181,6 +1217,15 @@ uip_process(uint8_t flag)
   }
 #endif /* UIP_IPV6_CONF_MULTICAST */
 
+  //oana: send ACK if I'm the destination and the sender is the root and lladdr is broadcast
+  //tim: XXX: do we need to check that the root is our parent???
+  //tim: not in the case I am the destination, for sure
+  if(uip_ds6_is_my_addr(&UIP_IP_BUF->destipaddr)) {
+     if(/*rpl_is_root_my_parent() &&*/ packetbuf_holds_broadcast()) {
+  	   uip_ipaddr_copy(&bcast_ack_dst, &UIP_IP_BUF->srcipaddr);
+	   process_post(&bcast_ack_process, BCAST_SEND_ACK_EVENT, NULL);
+	 }
+  }
   /* TBD Some Parameter problem messages */
   if(!uip_ds6_is_my_addr(&UIP_IP_BUF->destipaddr) &&
      !uip_ds6_is_my_maddr(&UIP_IP_BUF->destipaddr)) {
@@ -1210,6 +1255,15 @@ uip_process(uint8_t flag)
         /* Packet can not be forwarded */
         PRINTF("RPL Forward Option Error\n");
         goto drop;
+      }
+      else{
+      	//oana: here I should send the ACK, after verifying the RPL header
+		//tim: XXX: do we need to check that the root is our parent???
+		//tim: it doesn't matter actually as we anyway accept and forward the packet
+      	if(/*rpl_is_root_my_parent() &&*/ packetbuf_holds_broadcast()) {
+  	   		uip_ipaddr_copy(&bcast_ack_dst, &UIP_IP_BUF->srcipaddr);
+	   		process_post(&bcast_ack_process, BCAST_SEND_ACK_EVENT, NULL);
+		}
       }
 #endif /* UIP_CONF_IPV6_RPL */
 
@@ -1351,6 +1405,39 @@ uip_process(uint8_t flag)
           UIP_LOG("ip6: unrecognized routing type");
           goto send;
         }
+        uip_next_hdr = &UIP_EXT_BUF->next;
+        uip_ext_len += (UIP_EXT_BUF->len << 3) + 8;
+        break;
+      case UIP_PROTO_MCASTER:
+        printf("Processing mcaster header dest:");
+        uip_debug_ipaddr_print(&UIP_IP_BUF->destipaddr);
+        printf(" mcaster:");
+        uip_debug_ipaddr_print(&UIP_MCASTER_BUF->destipaddr);
+        if (! uip_ip6addr_cmp(UIP_IP_BUF->destipaddr.u8,UIP_MCASTER_BUF->destipaddr.u8)) { //check needed if we do not remove mcaster header to avoid infinte loops
+          //change dest address
+          printf("; dst change");
+          UIP_IP_BUF->destipaddr = UIP_MCASTER_BUF->destipaddr;
+          //remove mcaster header?
+          //check if our destination?
+          if(! uip_ds6_is_my_addr(&UIP_IP_BUF->destipaddr)) {  //if it is for me, let input processing go on
+            uip_ds6_route_t *r;
+            if((r = uip_ds6_route_lookup(&UIP_IP_BUF->destipaddr))) {
+              if (r->state.parent_state == ROUTE_ENTRY_DAO_NACKED) {
+                //resubmit for forwarding or send it out directly?
+                printf("; not ours, route -> forwarding\n");
+                goto send; //send directly TODO: reduce TTL, remove header?
+                //uip_input(); return; //resubmit for processing by uIP
+              } else {
+                printf("; not ours, route, but state %u -> dropping\n", r->state.parent_state);
+                goto drop;
+              }
+            } else  {
+              printf("; not ours, no route -> dropping\n");
+              goto drop;
+            }
+          }
+        }
+        printf("; ours, sending up\n");
         uip_next_hdr = &UIP_EXT_BUF->next;
         uip_ext_len += (UIP_EXT_BUF->len << 3) + 8;
         break;

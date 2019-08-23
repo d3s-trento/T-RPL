@@ -42,6 +42,8 @@
 #include "net/ip/uip-split.h"
 #include "net/ip/uip-packetqueue.h"
 
+#include "net/rpl/rpl-private.h"
+
 #if NETSTACK_CONF_WITH_IPV6
 #include "net/ipv6/uip-nd6.h"
 #include "net/ipv6/uip-ds6.h"
@@ -106,6 +108,28 @@ enum {
   PACKET_INPUT
 };
 
+static uip_buf_t root_bcast_buf;
+static uint16_t root_bcast_uip_len;
+struct ctimer root_bcast_timer;
+enum {RBC_IDLE, RBC_WAIT_ACK, RBC_RETRY} root_bcast_state = RBC_IDLE;
+
+void root_bcast_timeout(void* ptr) {
+	printf("TIMEOUT\n");
+	if (root_bcast_state == RBC_WAIT_ACK) {
+		printf("RETRY\n");
+		memcpy(uip_buf, &root_bcast_buf, root_bcast_uip_len);
+		uip_len = root_bcast_uip_len;
+		root_bcast_state = RBC_RETRY;
+		tcpip_ipv6_output();
+		root_bcast_state = RBC_IDLE;
+	}
+}
+
+void root_bcast_ack() {
+	ctimer_stop(&root_bcast_timer);
+	root_bcast_state = RBC_IDLE;
+}
+
 /* Called on IP packet output. */
 #if NETSTACK_CONF_WITH_IPV6
 
@@ -115,6 +139,7 @@ uint8_t
 tcpip_output(const uip_lladdr_t *a)
 {
   int ret;
+  PRINTF("tcpip_output\n");
   if(outputfunc != NULL) {
     ret = outputfunc(a);
     return ret;
@@ -566,14 +591,19 @@ tcpip_ipv6_output(void)
        link. If so, we simply use the destination address as our
        nexthop address. */
     if(uip_ds6_is_addr_onlink(&UIP_IP_BUF->destipaddr)){
+      printf("tcpip_ipv6_output: onlink\n");
       nexthop = &UIP_IP_BUF->destipaddr;
     } else {
       uip_ds6_route_t *route;
       /* Check if we have a route to the destination address. */
       route = uip_ds6_route_lookup(&UIP_IP_BUF->destipaddr);
+	
 
-      /* No route was found - we send to the default route instead. */
-      if(route == NULL) {
+      if(route == NULL && uip_ds6_nbr_lookup(&UIP_IP_BUF->destipaddr)) {
+        printf("tcpip_ipv6_output: no route, but found in nbr\n");
+        nexthop = &UIP_IP_BUF->destipaddr;
+      } else if(route == NULL) {
+        /* No route was found - we send to the default route instead. */
         PRINTF("tcpip_ipv6_output: no route found, using default route\n");
         nexthop = uip_ds6_defrt_choose();
         if(nexthop == NULL) {
@@ -589,7 +619,53 @@ tcpip_ipv6_output(void)
 	  }
 	  UIP_FALLBACK_INTERFACE.output();
 #else
-          PRINTF("tcpip_ipv6_output: Destination off-link but no route\n");
+	  {
+	  //tim: we didn't find a route, so sending a broadcast
+      //oana: I need to see if the sender is the root
+      rpl_dag_t *dag;
+      rpl_instance_t *instance;
+      dag = rpl_get_any_dag();
+      instance = dag->instance;
+	  if (dag && root_bcast_state == RBC_IDLE){
+	    //oana: broadcast if I am the root
+	    if(dag->rank == ROOT_RANK(instance)){
+	      //store the packet in a buffer to resend if no ack arrives 
+	      memcpy(&root_bcast_buf, uip_buf, uip_len);
+		  root_bcast_uip_len = uip_len;
+		  
+	    
+		  root_bcast_state = RBC_WAIT_ACK;
+	      rpl_update_header_final(NULL);
+	      printf("BCAST\n");
+	      tcpip_output(NULL);
+	      uip_len = 0;
+	      uip_ext_len = 0;
+	    
+	      // set timer for ACK; if no ACK, then resend the
+	      // packet with mcaster (with the multicast destination)
+	      ctimer_set(&root_bcast_timer, CLOCK_SECOND/2, root_bcast_timeout, NULL);
+	      return ;
+	    }
+	  }}
+#if UIP_CONF_IPV6_RPL
+          if(rpl_update_header_final(nexthop)) {	//needed by mcaster, might be added earlier, where changing the IP
+            uip_len = 0;
+            return;
+          }
+#endif /* UIP_CONF_IPV6_RPL */
+          //add dest option with real dest address
+          //allow it only at the root? If not, what is the limit?
+          if(! mcaster_insert_header(UIP_IP_BUF->destipaddr)) {
+            uip_len = 0;
+            return;
+          }
+          //change destination to mcaster
+#define MCASTER_GROUP 0xDDDD
+          printf("tcpip_ipv6_output: changing destination address to mcaster\n");
+          uip_ip6addr(&UIP_IP_BUF->destipaddr, 0xFF1E,0,0,0,0,0,0x89,MCASTER_GROUP);
+          //output packet as normal
+          tcpip_ipv6_output(); //lets hope we are not creating an infinite loop!
+          //PRINTF("tcpip_ipv6_output: Destination off-link but no route\n");
 #endif /* !UIP_FALLBACK_INTERFACE */
           uip_len = 0;
           return;
@@ -725,6 +801,13 @@ tcpip_ipv6_output(void)
     return;
   }
   /* Multicast IP destination address. */
+  PRINTF("Multicast IP destination address\n");
+//#if UIP_CONF_IPV6_RPL //moved earlier!
+//    if(rpl_update_header_final(nexthop)) {	//needed by mcaster, might be added earlier, where changing the IP
+//      uip_len = 0;
+//      return;
+//    }
+//#endif /* UIP_CONF_IPV6_RPL */
   tcpip_output(NULL);
   uip_len = 0;
   uip_ext_len = 0;

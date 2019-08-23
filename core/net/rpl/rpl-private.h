@@ -75,6 +75,7 @@
 #define RPL_CODE_SEC_DIO               0x81   /* Secure DIO */
 #define RPL_CODE_SEC_DAO               0x82   /* Secure DAO */
 #define RPL_CODE_SEC_DAO_ACK           0x83   /* Secure DAO ACK */
+#define RPL_CODE_BROADCAST_ACK		   0x10   /* oana: ACK sent to the root when finding a route entry */	
 
 /* RPL control message options. */
 #define RPL_OPTION_PAD1                  0
@@ -87,6 +88,14 @@
 #define RPL_OPTION_SOLICITED_INFO        7
 #define RPL_OPTION_PREFIX_INFO           8
 #define RPL_OPTION_TARGET_DESC           9
+
+/* RPL DAO ACK status values. */
+#define RPL_DAO_ACK_ACCEPT               0
+#define RPL_DAO_ACK_ACCEPTBUT            1
+#define RPL_DAO_ACK_ROUTE_MAYBE          2  //oana
+#define RPL_DAO_ACK_REJECT             128
+#define RPL_DAO_ACK_ROUTE_REJECT       129  //oana
+#define RPL_DAO_ACK_ROOT_REJECT        130  //oana
 
 #define RPL_DAO_K_FLAG                   0x80 /* DAO ACK requested */
 #define RPL_DAO_D_FLAG                   0x40 /* DODAG ID present */
@@ -107,7 +116,8 @@
 #ifdef RPL_CONF_DAO_LATENCY
 #define RPL_DAO_LATENCY                 RPL_CONF_DAO_LATENCY
 #else /* RPL_CONF_DAO_LATENCY */
-#define RPL_DAO_LATENCY                 (CLOCK_SECOND * 4)
+//#define RPL_DAO_LATENCY                 (CLOCK_SECOND * 4)
+#define RPL_DAO_LATENCY                 (CLOCK_SECOND * 3) // Oana's change
 #endif /* RPL_DAO_LATENCY */
 
 /* Special value indicating immediate removal. */
@@ -136,7 +146,8 @@
 
 
 /* Expire DAOs from neighbors that do not respond in this time. (seconds) */
-#define DAO_EXPIRATION_TIMEOUT          60
+//#define DAO_EXPIRATION_TIMEOUT          60
+#define DAO_EXPIRATION_TIMEOUT          0   //oana
 /*---------------------------------------------------------------------------*/
 #define RPL_INSTANCE_LOCAL_FLAG         0x80
 #define RPL_INSTANCE_D_FLAG             0x40
@@ -267,10 +278,13 @@ extern rpl_instance_t *default_instance;
 /* ICMPv6 functions for RPL. */
 void dis_output(uip_ipaddr_t *addr);
 void dio_output(rpl_instance_t *, uip_ipaddr_t *uc_addr);
+void send_dao_all_targets(rpl_instance_t *, rpl_parent_t *p);
 void dao_output(rpl_parent_t *, uint8_t lifetime);
 void dao_output_target(rpl_parent_t *, uip_ipaddr_t *, uint8_t lifetime);
-void dao_ack_output(rpl_instance_t *, uip_ipaddr_t *, uint8_t);
+void dao_ack_output(rpl_instance_t *, uip_ipaddr_t *, uint8_t, uint8_t);
+void broadcast_ack_output(uip_ipaddr_t *, uint8_t);
 void rpl_icmp6_register_handlers(void);
+void dao_output_myself(rpl_parent_t *parent, uip_ipaddr_t *prefix, uint8_t lifetime);
 
 /* RPL logic functions. */
 void rpl_join_dag(uip_ipaddr_t *from, rpl_dio_t *dio);
@@ -295,6 +309,7 @@ void rpl_move_parent(rpl_dag_t *dag_src, rpl_dag_t *dag_dst, rpl_parent_t *paren
 rpl_parent_t *rpl_select_parent(rpl_dag_t *dag);
 rpl_dag_t *rpl_select_dag(rpl_instance_t *instance,rpl_parent_t *parent);
 void rpl_recalculate_ranks(void);
+rpl_parent_t *new_dao_parent(rpl_dag_t *dag);
 
 /* RPL routing table functions. */
 void rpl_remove_routes(rpl_dag_t *dag);
@@ -305,6 +320,9 @@ void rpl_purge_routes(void);
 
 /* Lock a parent in the neighbor cache. */
 void rpl_lock_parent(rpl_parent_t *p);
+void rpl_unlock_parent(rpl_parent_t *p);
+/* Get locked status of parent in the neighbor cache. */
+int rpl_parent_is_locked(rpl_parent_t *p);
 
 /* Objective function. */
 rpl_of_t *rpl_find_of(rpl_ocp_t);

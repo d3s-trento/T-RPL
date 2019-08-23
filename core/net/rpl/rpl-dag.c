@@ -151,6 +151,26 @@ rpl_set_preferred_parent(rpl_dag_t *dag, rpl_parent_t *p)
     nbr_table_unlock(rpl_parents, dag->preferred_parent);
     nbr_table_lock(rpl_parents, p);
     dag->preferred_parent = p;
+    //nbr_table_unlock(rpl_parents, dag->preferred_dao_parent); // whatch out not to unlock parent
+    //nbr_table_lock(rpl_parents, p);
+	
+	//oana: changed pref parent, will send a NO-PATH DAO, so we need to have the latest info
+   //dag->last_preferred_dao_parent->already_tried = 0;
+   //printf("RPL [rpl_set_preferred_parent]: last preferred parent: before");
+   //uip_debug_ipaddr_print(rpl_get_parent_ipaddr(dag->last_preferred_dao_parent));
+
+   dag->last_preferred_dao_parent = p;     
+   //printf("RPL [rpl_set_preferred_parent]: last preferred parent: after");
+   //uip_debug_ipaddr_print(rpl_get_parent_ipaddr(dag->last_preferred_dao_parent));
+   //printf("\n");
+   
+   //oana: at the beginning DIO and DAO parents are the same; try another DAO parent when out o
+   p->already_tried = 1; 
+   
+   if(dag->last_preferred_dao_parent == NULL && p != NULL){
+   	dag->last_preferred_dao_parent = p;
+   	//printf("RPL [rpl_set_preferred_parent]: last preferred parent: %p", dag->last_preferred_da
+   }
   }
 }
 /*---------------------------------------------------------------------------*/
@@ -486,6 +506,7 @@ rpl_alloc_dag(uint8_t instance_id, uip_ipaddr_t *dag_id)
       dag->rank = INFINITE_RANK;
       dag->min_rank = INFINITE_RANK;
       dag->instance = instance;
+	  dag->last_preferred_dao_parent = NULL;
       return dag;
     }
   }
@@ -566,11 +587,12 @@ rpl_add_parent(rpl_dag_t *dag, rpl_dio_t *dio, uip_ipaddr_t *addr)
     /* Add parent in rpl_parents */
     p = nbr_table_add_lladdr(rpl_parents, (linkaddr_t *)lladdr);
     if(p == NULL) {
-      PRINTF("RPL: rpl_add_parent p NULL\n");
+      printf("RPL: rpl_add_parent p NULL\n");
     } else {
       p->dag = dag;
       p->rank = dio->rank;
       p->dtsn = dio->dtsn;
+	  p->already_tried = 0;
       p->link_metric = RPL_INIT_LINK_METRIC * RPL_DAG_MC_ETX_DIVISOR;
 #if RPL_DAG_MC != RPL_DAG_MC_NONE
       memcpy(&p->mc, &dio->mc, sizeof(p->mc));
@@ -685,8 +707,8 @@ rpl_select_dag(rpl_instance_t *instance, rpl_parent_t *p)
     PRINTF("RPL: New rank unacceptable!\n");
     rpl_set_preferred_parent(instance->current_dag, NULL);
     if(instance->mop != RPL_MOP_NO_DOWNWARD_ROUTES && last_parent != NULL) {
-      /* Send a No-Path DAO to the removed preferred parent. */
-      dao_output(last_parent, RPL_ZERO_LIFETIME);
+      printf("Send a No-Path DAO to the removed preferred parent1\n");
+      //dao_output(last_parent, RPL_ZERO_LIFETIME);
     }
     return NULL;
   }
@@ -698,10 +720,17 @@ rpl_select_dag(rpl_instance_t *instance, rpl_parent_t *p)
     RPL_STAT(rpl_stats.parent_switch++);
     if(instance->mop != RPL_MOP_NO_DOWNWARD_ROUTES) {
       if(last_parent != NULL) {
-        /* Send a No-Path DAO to the removed preferred parent. */
+        printf("Send a No-Path DAO to the removed preferred parent2\n");
         dao_output(last_parent, RPL_ZERO_LIFETIME);
+
+        best_dag->last_preferred_dao_parent = best_dag->preferred_parent; //oana
+        printf("RPL-DAG: last preferred parent: ");
+        uip_debug_ipaddr_print(rpl_get_parent_ipaddr(best_dag->last_preferred_dao_parent));
+        printf("\n");
+        send_dao_all_targets(instance,p);  //oana: test - send dao for all the targets
       }
       /* The DAO parent set changed - schedule a DAO transmission. */
+	  PRINTF("RPL-DAG should send a new DAO in a few sec\n");
       RPL_LOLLIPOP_INCREMENT(instance->dtsn_out);
       rpl_schedule_dao(instance);
     }
@@ -747,6 +776,48 @@ rpl_select_parent(rpl_dag_t *dag)
   return best;
 }
 /*---------------------------------------------------------------------------*/
+
+rpl_parent_t *
+new_dao_parent(rpl_dag_t *dag)
+{
+
+  //printf("RPL: in new_dao_parent\n");
+  
+  rpl_parent_t *p, *best;
+
+  best = NULL;
+       
+  p = nbr_table_head(rpl_parents);
+  while(p != NULL) {
+    //if(p->dag != dag || p->rank == INFINITE_RANK || p->already_tried == 1) {
+    if(p->dag != dag || DAG_RANK(p->rank, dag->instance) >= DAG_RANK(dag->rank, dag->instance)  || p->already_tried == 1){
+      /* ignore this neighbor */
+    }else 
+       if(best == NULL){
+               best = p;
+       }else{
+               PRINTF("RPL: p has rank %u\n", DAG_RANK(p->rank, dag->instance));
+               best = dag->instance->of->best_parent(best, p);
+       }
+    p = nbr_table_next(rpl_parents, p);
+  }
+
+       /*//debug
+       rpl_parent_t *pp;
+       int count = 0;
+       pp = nbr_table_head(rpl_parents);
+       while(pp != NULL) {
+       count++;
+               pp = nbr_table_next(rpl_parents, pp);
+
+       }
+       
+       printf("RPL: new_dao_parent Node has %d parents \n", count);    */
+       
+  return best;
+}
+/*---------------------------------------------------------------------------*/
+
 void
 rpl_remove_parent(rpl_parent_t *parent)
 {
@@ -776,7 +847,8 @@ rpl_nullify_parent(rpl_parent_t *parent)
         uip_ds6_defrt_rm(dag->instance->def_route);
         dag->instance->def_route = NULL;
       }
-      dao_output(parent, RPL_ZERO_LIFETIME);
+      //printf("rpl_nullify_parent: Send No-Path DAO\n");
+      //dao_output(parent, RPL_ZERO_LIFETIME);
     }
   }
 
@@ -1317,6 +1389,17 @@ void
 rpl_lock_parent(rpl_parent_t *p)
 {
   nbr_table_lock(rpl_parents, p);
+}
+/*---------------------------------------------------------------------------*/
+int
+rpl_parent_is_locked(rpl_parent_t *p)
+{
+  return nbr_table_is_locked(rpl_parents, p);
+}
+void
+rpl_unlock_parent(rpl_parent_t *p)
+{
+  nbr_table_unlock(rpl_parents, p);
 }
 /*---------------------------------------------------------------------------*/
 /** @} */

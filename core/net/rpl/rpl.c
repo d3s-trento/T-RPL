@@ -137,7 +137,7 @@ rpl_purge_routes(void)
       uip_ds6_route_rm(r);
       r = uip_ds6_route_head();
       PRINTF("No more routes to ");
-      PRINT6ADDR(&prefix);
+      PRINT6ADDR(prefix);
       dag = default_instance->current_dag;
       /* Propagate this information with a No-Path DAO to preferred parent if we are not a RPL Root */
       if(dag->rank != ROOT_RANK(default_instance)) {
@@ -306,6 +306,22 @@ rpl_init(void)
   /* add rpl multicast address */
   uip_create_linklocal_rplnodes_mcast(&rplmaddr);
   uip_ds6_maddr_add(&rplmaddr);
+
+  //join mcaster group
+  {
+    uip_ipaddr_t addr;
+    uip_ds6_maddr_t * rv;
+
+#define MCASTER_GROUP 0xDDDD
+    uip_ip6addr(&addr, 0xFF1E,0,0,0,0,0,0x89,MCASTER_GROUP);
+    rv = uip_ds6_maddr_add(&addr);
+
+    if(rv) {
+      printf("RPL: joined mcaster group ");
+      PRINT6ADDR(&uip_ds6_maddr_lookup(&addr)->ipaddr);
+      printf("\n");
+    }
+  }
 
 #if RPL_CONF_STATS
   memset(&rpl_stats, 0, sizeof(rpl_stats));

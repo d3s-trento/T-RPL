@@ -101,11 +101,11 @@ uip_ds6_nbr_add(const uip_ipaddr_t *ipaddr, const uip_lladdr_t *lladdr,
     NEIGHBOR_STATE_CHANGED(nbr);
     return nbr;
   } else {
-    PRINTF("uip_ds6_nbr_add drop ip addr ");
+    printf("uip_ds6_nbr_add drop ip addr ");
     PRINT6ADDR(ipaddr);
     PRINTF(" link addr (%p) ", lladdr);
     PRINTLLADDR(lladdr);
-    PRINTF(" state %u\n", state);
+    printf(" state %u\n", state);
     return NULL;
   }
 }
@@ -234,11 +234,15 @@ uip_ds6_link_neighbor_callback(int status, int numtx)
 void
 uip_ds6_neighbor_periodic(void)
 {
+  unsigned int reachable = 0, incomplete = 0, delay = 0, probe = 0;
+  static stats_print_counter;
+
   /* Periodic processing on neighbors */
   uip_ds6_nbr_t *nbr = nbr_table_head(ds6_neighbors);
   while(nbr != NULL) {
     switch(nbr->state) {
     case NBR_REACHABLE:
+      reachable++;
       if(stimer_expired(&nbr->reachable)) {
 #if UIP_CONF_IPV6_RPL
         /* when a neighbor leave it's REACHABLE state and is a default router,
@@ -270,6 +274,7 @@ uip_ds6_neighbor_periodic(void)
       break;
 #if UIP_ND6_SEND_NA
     case NBR_INCOMPLETE:
+      incomplete++;
       if(nbr->nscount >= UIP_ND6_MAX_MULTICAST_SOLICIT) {
         uip_ds6_nbr_rm(nbr);
       } else if(stimer_expired(&nbr->sendns) && (uip_len == 0)) {
@@ -280,6 +285,7 @@ uip_ds6_neighbor_periodic(void)
       }
       break;
     case NBR_DELAY:
+      delay++;
       if(stimer_expired(&nbr->reachable)) {
         nbr->state = NBR_PROBE;
         nbr->nscount = 0;
@@ -288,6 +294,7 @@ uip_ds6_neighbor_periodic(void)
       }
       break;
     case NBR_PROBE:
+      probe++;
       if(nbr->nscount >= UIP_ND6_MAX_UNICAST_SOLICIT) {
         uip_ds6_defrt_t *locdefrt;
         PRINTF("PROBE END\n");
@@ -309,6 +316,13 @@ uip_ds6_neighbor_periodic(void)
       break;
     }
     nbr = nbr_table_next(ds6_neighbors, nbr);
+  }
+
+  if (stats_print_counter++ % (60 * CLOCK_SECOND / UIP_DS6_PERIOD) == 0) {
+    stats_print_counter = 1;
+    nbr_table_stats_t *stats = nbr_table_get_stats();
+    printf("nbr_table locked %u used %u max %u",stats->locked, stats->used, stats->max);
+    printf(" ds6_nbr reachable %u incomplete %u, delay %u, probe %u;\n", reachable, incomplete, delay, probe);
   }
 }
 /*---------------------------------------------------------------------------*/

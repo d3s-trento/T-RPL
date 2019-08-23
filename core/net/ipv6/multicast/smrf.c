@@ -88,6 +88,21 @@ in()
   rpl_dag_t *d;                 /* Our DODAG */
   uip_ipaddr_t *parent_ipaddr;  /* Our pref. parent's IPv6 address */
   const uip_lladdr_t *parent_lladdr;  /* Our pref. parent's LL address */
+  int duplicate = 0;
+
+  PRINTF("SMRF: in\n");
+#if SMRF_CACHE_AND_COMPARE
+  if (mcast_len == uip_len
+     && memcmp(mcast_buf.u8 + UIP_LLH_LEN, uip_buf + UIP_LLH_LEN, offsetof(struct uip_ip_hdr,ttl)) == 0
+     && memcmp(mcast_buf.u8 + UIP_LLH_LEN + offsetof(struct uip_ip_hdr,ttl) + 1, uip_buf + UIP_LLH_LEN + offsetof(struct uip_ip_hdr,ttl) + 1, uip_len - UIP_LLH_LEN - offsetof(struct uip_ip_hdr,ttl) - 1 - 2) == 0) //- 2 to exclude FCS
+  {
+    PRINTF("SMRF: Duplicate\n");
+
+// TODO: if it was not from the parent, and now it is, reschedule
+    duplicate = 1;
+    //return UIP_MCAST6_DROP;
+  }
+#endif
 
   /*
    * Fetch a pointer to the LL address of our preferred parent
@@ -103,39 +118,22 @@ in()
     return UIP_MCAST6_DROP;
   }
 
-  /* Retrieve our preferred parent's LL address */
-  parent_ipaddr = rpl_get_parent_ipaddr(d->preferred_parent);
-  parent_lladdr = uip_ds6_nbr_lladdr_from_ipaddr(parent_ipaddr);
-
-  if(parent_lladdr == NULL) {
-    UIP_MCAST6_STATS_ADD(mcast_dropped);
-    return UIP_MCAST6_DROP;
-  }
-
-  /*
-   * We accept a datagram if it arrived from our preferred parent, discard
-   * otherwise.
-   */
-  if(memcmp(parent_lladdr, packetbuf_addr(PACKETBUF_ADDR_SENDER),
-            UIP_LLADDR_LEN)) {
-    PRINTF("SMRF: Routable in but SMRF ignored it\n");
-    UIP_MCAST6_STATS_ADD(mcast_dropped);
-    return UIP_MCAST6_DROP;
-  }
-
-  if(UIP_IP_BUF->ttl <= 1) {
-    UIP_MCAST6_STATS_ADD(mcast_dropped);
-    return UIP_MCAST6_DROP;
-  }
-
   UIP_MCAST6_STATS_ADD(mcast_in_all);
   UIP_MCAST6_STATS_ADD(mcast_in_unique);
 
-  /* If we have an entry in the mcast routing table, something with
-   * a higher RPL rank (somewhere down the tree) is a group member */
-  if(uip_mcast6_route_lookup(&UIP_IP_BUF->destipaddr)) {
-    /* If we enter here, we will definitely forward */
-    UIP_MCAST6_STATS_ADD(mcast_fwd);
+  if(UIP_IP_BUF->ttl <= 1) {
+    PRINTF("SMRF: TTL reached; not forwarding\n");
+#ifdef SMRF_DROP_ON_TTL
+    return UIP_MCAST6_DROP;
+#endif
+  } else if(uip_mcast6_route_lookup(&UIP_IP_BUF->destipaddr)) {
+    /* If we have an entry in the mcast routing table, something with
+     * a higher RPL rank (somewhere down the tree) is a group member */
+
+
+//TODO:move    PRINTF("SMRF: will forward, ttl:%u\n", UIP_IP_BUF->ttl);
+//    /* If we enter here, we will definitely forward */
+//    UIP_MCAST6_STATS_ADD(mcast_fwd);
 
     /*
      * Add a delay (D) of at least SMRF_FWD_DELAY() to compensate for how
@@ -151,21 +149,70 @@ in()
     }
 #endif
 
+    fwd_spread = SMRF_INTERVAL_COUNT;
+    if(fwd_spread > SMRF_MAX_SPREAD) {
+      fwd_spread = SMRF_MAX_SPREAD;
+    }
+
+
+    /* Retrieve our preferred parent's LL address */
+    parent_ipaddr = rpl_get_parent_ipaddr(d->preferred_parent);
+    parent_lladdr = uip_ds6_nbr_lladdr_from_ipaddr(parent_ipaddr);
+
+    if(parent_lladdr == NULL ||
+       memcmp(parent_lladdr, packetbuf_addr(PACKETBUF_ADDR_SENDER),
+              UIP_LLADDR_LEN)) {
+      rpl_rank_t prevhop_rank; /* RPL rank of the previous hop (L2 sender) */
+
+#ifdef SMRF_DROP_ON_NOTFROMPARENT
+      /*
+       * We accept a datagram for forwarding only if it arrived from our preferred parent.
+       */
+      PRINTF("SMRF: Routable in but not from parent; not forwarding\n");
+      return UIP_MCAST6_DROP;
+#endif
+
+      if (duplicate) {
+        return UIP_MCAST6_DROP;
+      }
+
+      /*
+       * If packet arrived from our preferred parent, forward it.
+       * Otherwise, if arrived from someone with lower rank,
+       * store it, and forward only after a timeout, if the same packet is not received again from preferred parent.
+       */
+      prevhop_rank = rpl_get_parent_rank(packetbuf_addr(PACKETBUF_ADDR_SENDER)); // would be better to use the rank in the packet's RPL header
+      if (!prevhop_rank || prevhop_rank >= d->rank) {
+        PRINTF("SMRF: Routable in but from higher rank; not forwarding\n");
+        return UIP_MCAST6_DROP;
+      }
+
+      PRINTF("SMRF: Routable in but not from parent; delaying\n");
+      if(fwd_spread) {
+        fwd_delay *= (fwd_spread + 1);
+      }
+    } else {
+      // if it has already been sent, drop; otherwise, delay can be reduced
+      if (duplicate && ctimer_expired(&mcast_periodic)) {
+        return UIP_MCAST6_DROP;
+      }
+      /* Randomise final delay in [D , D*Spread], step D */
+      if(fwd_spread) {
+        fwd_delay = fwd_delay * (1 + ((random_rand() >> 11) % fwd_spread));
+      }
+    }
+
     if(fwd_delay == 0) {
       /* No delay required, send it, do it now, why wait? */
       UIP_IP_BUF->ttl--;
       tcpip_output(NULL);
       UIP_IP_BUF->ttl++;        /* Restore before potential upstack delivery */
+#if SMRF_CACHE_AND_COMPARE
+      ctimer_stop(&mcast_periodic); /* stop an eventual active timer, it is vald anymore */
+      memcpy(&mcast_buf, uip_buf, uip_len);
+      mcast_len = uip_len;
+#endif
     } else {
-      /* Randomise final delay in [D , D*Spread], step D */
-      fwd_spread = SMRF_INTERVAL_COUNT;
-      if(fwd_spread > SMRF_MAX_SPREAD) {
-        fwd_spread = SMRF_MAX_SPREAD;
-      }
-      if(fwd_spread) {
-        fwd_delay = fwd_delay * (1 + ((random_rand() >> 11) % fwd_spread));
-      }
-
       memcpy(&mcast_buf, uip_buf, uip_len);
       mcast_len = uip_len;
       ctimer_set(&mcast_periodic, fwd_delay, mcast_fwd, NULL);
@@ -175,9 +222,12 @@ in()
   }
 
   /* Done with this packet unless we are a member of the mcast group */
+  // TODO: caching might be needed here as well
+  if (duplicate) return UIP_MCAST6_DROP;
   if(!uip_ds6_is_my_maddr(&UIP_IP_BUF->destipaddr)) {
-    PRINTF("SMRF: Not a group member. No further processing\n");
-    return UIP_MCAST6_DROP;
+    PRINTF("SMRF: Not a group member, but it might be ours overheard ... deliver to upper layers\n");
+    //return UIP_MCAST6_DROP;
+    return UIP_MCAST6_ACCEPT; // This is mcaster specific. It assumes that there is an mcaster header, and it will be dropped if the dst in it is not us. TODO: check that it is mcasster
   } else {
     PRINTF("SMRF: Ours. Deliver to upper layers\n");
     UIP_MCAST6_STATS_ADD(mcast_in_ours);
@@ -188,6 +238,7 @@ in()
 static void
 init()
 {
+  PRINTF("SMRF: init\n");
   UIP_MCAST6_STATS_INIT(NULL);
 
   uip_mcast6_route_init();

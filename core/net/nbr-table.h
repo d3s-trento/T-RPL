@@ -60,6 +60,12 @@ typedef struct nbr_table {
   nbr_table_item_t *data;
 } nbr_table_t;
 
+typedef struct nbr_table_stats {
+  uint8_t locked;
+  uint8_t used;
+  uint8_t max;
+} nbr_table_stats_t;
+
 /** \brief A static neighbor table. To be initialized through nbr_table_register(name) */
 #define NBR_TABLE(type, name) \
   static type _##name##_mem[NBR_TABLE_MAX_NEIGHBORS]; \
@@ -93,11 +99,17 @@ nbr_table_item_t *nbr_table_get_from_lladdr(nbr_table_t *table, const linkaddr_t
 int nbr_table_remove(nbr_table_t *table, nbr_table_item_t *item);
 int nbr_table_lock(nbr_table_t *table, nbr_table_item_t *item);
 int nbr_table_unlock(nbr_table_t *table, nbr_table_item_t *item);
+int nbr_table_is_locked(nbr_table_t *table, nbr_table_item_t *item);
 /** @} */
 
 /** \name Neighbor tables: address manipulation */
 /** @{ */
 linkaddr_t *nbr_table_get_lladdr(nbr_table_t *table, const nbr_table_item_t *item);
+/** @} */
+
+/** \name Neighbor tables: get usage statistics */
+/** @{ */
+nbr_table_stats_t *nbr_table_get_stats(void);
 /** @} */
 
 #endif /* NBR_TABLE_H_ */

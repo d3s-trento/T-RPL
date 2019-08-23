@@ -106,6 +106,7 @@ struct rpl_dag;
 /*---------------------------------------------------------------------------*/
 #define RPL_PARENT_FLAG_UPDATED           0x1
 #define RPL_PARENT_FLAG_LINK_METRIC_VALID 0x2
+#define RPL_PARENT_FLAG_DAO_NACK          0x4
 
 struct rpl_parent {
   struct rpl_parent *next;
@@ -117,6 +118,7 @@ struct rpl_parent {
   uint16_t link_metric;
   uint8_t dtsn;
   uint8_t flags;
+  uint8_t already_tried; //oana
 };
 typedef struct rpl_parent rpl_parent_t;
 /*---------------------------------------------------------------------------*/
@@ -140,6 +142,8 @@ struct rpl_dag {
   /* live data for the DAG */
   uint8_t joined;
   rpl_parent_t *preferred_parent;
+  //rpl_parent_t *preferred_dao_parent;
+  rpl_parent_t *last_preferred_dao_parent;
   rpl_rank_t rank;
   struct rpl_instance *instance;
   rpl_prefix_t prefix_info;
@@ -252,6 +256,7 @@ rpl_rank_t rpl_get_parent_rank(uip_lladdr_t *addr);
 uint16_t rpl_get_parent_link_metric(const uip_lladdr_t *addr);
 void rpl_dag_init(void);
 
+int mcaster_insert_header(uip_ip6addr_t addr);
 
 /**
  * RPL modes

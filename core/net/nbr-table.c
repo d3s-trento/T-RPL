@@ -224,6 +224,29 @@ nbr_table_allocate(void)
   }
 }
 /*---------------------------------------------------------------------------*/
+nbr_table_stats_t *
+nbr_table_get_stats(void)
+{
+  static nbr_table_stats_t stats;
+  nbr_table_key_t *key;
+
+  stats.locked = 0;
+  stats.used = 0;
+  stats.max = NBR_TABLE_MAX_NEIGHBORS;
+
+  /* Get item from first key */
+  key = list_head(nbr_table_keys);
+  while(key != NULL) {
+    int item_index = index_from_key(key);
+    uint8_t locked = locked_map[item_index];
+    uint8_t used = used_map[item_index];
+    if(locked) stats.locked++;
+    if(used) stats.used++;
+    key = list_item_next(key);
+  }
+  return &stats;
+}
+/*---------------------------------------------------------------------------*/
 /* Register a new neighbor table. To be used at initialization by modules
  * using a neighbor table */
 int
@@ -339,6 +362,13 @@ int
 nbr_table_unlock(nbr_table_t *table, void *item)
 {
   return nbr_set_bit(locked_map, table, item, 0);
+}
+/*---------------------------------------------------------------------------*/
+/* Get locked status of a neighborfor the current table (get "locked" bit) */
+int
+nbr_table_is_locked(nbr_table_t *table, void *item)
+{
+  return nbr_get_bit(locked_map, table, item);
 }
 /*---------------------------------------------------------------------------*/
 /* Get link-layer address of an item */

@@ -85,13 +85,13 @@ assert_nbr_routes_list_sane(void)
         count++);
 
   if(count > UIP_DS6_ROUTE_NB) {
-    printf("uip-ds6-route.c: assert_nbr_routes_list_sane route list is in infinite loop\n");
+    PRINTF("uip-ds6-route.c: assert_nbr_routes_list_sane route list is in infinite loop\n");
   }
 
   /* Make sure that the route list has as many entries as the
      num_routes vairable. */
   if(count < num_routes) {
-    printf("uip-ds6-route.c: assert_nbr_routes_list_sane too few entries on route list: should be %d, is %d, max %d\n",
+    PRINTF("uip-ds6-route.c: assert_nbr_routes_list_sane too few entries on route list: should be %d, is %d, max %d\n",
            num_routes, count, UIP_CONF_MAX_ROUTES);
   }
 }
@@ -280,11 +280,14 @@ uip_ds6_route_add(uip_ipaddr_t *ipaddr, uint8_t length,
        check if we have room for this route. If not, we remove the
        least recently used one we have. */
 
+    /* TODO: make this optional */
     if(uip_ds6_route_num_routes() == UIP_DS6_ROUTE_NB) {
       /* Removing the oldest route entry from the route table. The
          least recently used route is the first route on the list. */
       uip_ds6_route_t *oldest;
 
+      PRINTF("No more route entries\n");
+      return NULL;
       oldest = list_tail(routelist); /* uip_ds6_route_head(); */
       PRINTF("uip_ds6_route_add: dropping route to ");
       PRINT6ADDR(&oldest->ipaddr);
@@ -315,11 +318,14 @@ uip_ds6_route_add(uip_ipaddr_t *ipaddr, uint8_t length,
       if(routes == NULL) {
         /* This should not happen, as we explicitly deallocated one
            route table entry above. */
-        PRINTF("uip_ds6_route_add: could not allocate neighbor table entry\n");
+        printf("uip_ds6_route_add: could not allocate neighbor table entry\n");
         return NULL;
       }
       LIST_STRUCT_INIT(routes, route_list);
     }
+
+    /* lock route next hop with live route entry */
+    nbr_table_lock(nbr_routes,routes); // locking is the responsability of the caller
 
     /* Allocate a routing entry and populate it. */
     r = memb_alloc(&routememb);
@@ -401,7 +407,7 @@ uip_ds6_route_rm(uip_ds6_route_t *route)
 
     if(neighbor_route == NULL) {
       PRINTF("uip_ds6_route_rm: neighbor_route was NULL for ");
-      uip_debug_ipaddr_print(&route->ipaddr);
+      PRINT6ADDR(&route->ipaddr);
       PRINTF("\n");
     }
     list_remove(route->neighbor_routes->route_list, neighbor_route);
@@ -409,6 +415,7 @@ uip_ds6_route_rm(uip_ds6_route_t *route)
       /* If this was the only route using this neighbor, remove the
          neibhor from the table */
       PRINTF("uip_ds6_route_rm: removing neighbor too\n");
+      nbr_table_unlock(nbr_routes, route->neighbor_routes->route_list); /* locking and unlocking is the responsability of the caller; remove unlocks anyway */
       nbr_table_remove(nbr_routes, route->neighbor_routes->route_list);
     }
     memb_free(&routememb, route);
@@ -508,9 +515,9 @@ uip_ds6_defrt_add(uip_ipaddr_t *ipaddr, unsigned long interval)
       PRINTF(", out of memory\n");
       return NULL;
     } else {
-      PRINTF("uip_ds6_defrt_add: adding default route to ");
-      PRINT6ADDR(ipaddr);
-      PRINTF("\n");
+      printf("uip_ds6_defrt_add: adding default route to ");
+      uip_debug_ipaddr_print(ipaddr);
+      printf("\n");
     }
 
     list_push(defaultrouterlist, d);
